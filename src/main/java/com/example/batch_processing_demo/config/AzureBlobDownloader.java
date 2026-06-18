@@ -1,51 +1,80 @@
-@Service
+package com.example.batch_processing_demo.scheduler;
+
+import com.example.batch_processing_demo.azure.AzureBlobDownloader;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.batch.core.launch.JobOperator;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+import java.io.File;
+import java.util.List;
+
+@Component
 @RequiredArgsConstructor
-public class AzureBlobDownloader {
+@Slf4j
+public class AzurePollingService {
 
-    private final BlobServiceClient client;
+    private final AzureBlobDownloader azureBlobDownloader;
 
-    @Value("${azure.storage.container}")
-    private String containerName;
+    private final JobOperator jobOperator;
 
-    @Value("${azure.storage.input-folder}")
-    private String inputFolder;
+    @Scheduled(
+            fixedDelayString = "${azure.polling.interval:60000}")
+    public void pollAzureStorage() {
 
-    @Value("${local.directory}")
-    private String localDirectory;
+        try {
 
-    public List<File> downloadFiles() {
+            log.info("Polling Azure Blob Storage...");
 
-        BlobContainerClient container =
-                client.getBlobContainerClient(containerName);
+            List<File> files =
+                    azureBlobDownloader.downloadFiles();
 
-        List<File> downloadedFiles = new ArrayList<>();
+            if (files.isEmpty()) {
 
-        container.listBlobsByHierarchy(
-                inputFolder + "/")
+                log.info("No files found.");
 
-                .forEach(blob -> {
+                return;
+            }
 
-                    String blobName =
-                            blob.getName();
+            for (File file : files) {
 
-                    String fileName =
-                            Paths.get(blobName)
-                                    .getFileName()
-                                    .toString();
+                launchJob(file);
+            }
 
-                    File localFile =
-                            new File(
-                                    localDirectory,
-                                    fileName);
+        } catch (Exception ex) {
 
-                    container.getBlobClient(blobName)
-                            .downloadToFile(
-                                    localFile.getAbsolutePath(),
-                                    true);
+            log.error(
+                    "Error while polling Azure Blob Storage",
+                    ex);
+        }
+    }
 
-                    downloadedFiles.add(localFile);
-                });
+    private void launchJob(File file) {
 
-        return downloadedFiles;
+        try {
+
+            String parameters =
+                    "inputFile="
+                            + file.getAbsolutePath()
+                            + ",run.id="
+                            + System.currentTimeMillis();
+
+            Long executionId =
+                    jobOperator.start(
+                            "inventoryJob",
+                            parameters);
+
+            log.info(
+                    "Started inventoryJob. Execution Id={}",
+                    executionId);
+
+        } catch (Exception ex) {
+
+            log.error(
+                    "Failed to start job for file {}",
+                    file.getName(),
+                    ex);
+        }
     }
 }
